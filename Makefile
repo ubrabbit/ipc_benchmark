@@ -1,6 +1,6 @@
 CC := gcc
 CFLAGS := -g -Wall
-TARGET := pipe fifo socketpair uds tcp udp shm
+TARGET := pipe fifo socketpair uds tcp udp shm shm2
 
 all: $(TARGET)
 
@@ -22,8 +22,11 @@ tcp: tcp.c
 udp: udp.c
 	$(CC) $(CFLAGS) -o $@ $<
 
-udp: shm.c
+shm: shm.c
 	$(CC) $(CFLAGS) -o $@ $<
+
+shm2: shm2.c
+	$(CC) $(CFLAGS) -lrt -o $@ $<
 
 .PHONY: test
 test:

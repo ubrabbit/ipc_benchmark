@@ -12,10 +12,21 @@
 
 // #define USE_MB
 // #define USE_LOCK
+// #define USE_POT
 
 #define SHM_NAME_LEN 60
 #define MIN(a, b) ((a) > (b) ? (b) : (a))
-#define memory_barrier __sync_synchronize()
+#define IS_POT(x) ((x) && !((x) & ((x)-1)))
+#define MEMORY_BARRIER __sync_synchronize()
+
+static uint32_t roundup_pow_of_two(size) {
+    size |= size >> 1;
+    size |= size >> 2;
+    size |= size >> 4;
+    size |= size >> 8;
+    size |= size >> 16;
+    return size+1;
+}
 
 /////////////////////////////////////////////////////////////////////
 // spin lock
@@ -47,12 +58,20 @@ typedef struct {
 } ringbuffer_t;
 
 // 创建ringbuffer
-ringbuffer_t *rb_create(const char *name, int sz, int master) {
+ringbuffer_t *rb_create(const char *name, uint32_t sz, int master) {
     int shm_fd = shm_open(name, O_CREAT | O_RDWR, 0666);
     if (shm_fd < 0) {
         perror("shm_open");
         return NULL;
     }
+
+#ifdef USE_POT
+    if (!IS_POT(sz)) {
+        sz = roundup_pow_of_two(sz);
+        // printf("size=%u\n", sz);
+    }
+#endif
+
     size_t size = sizeof(ringbuffer_t) + sz;
     if (ftruncate(shm_fd, size) < 0) {
         perror("ftruncate");
@@ -99,12 +118,22 @@ void rb_free(ringbuffer_t *rb, int master) {
     }
 }
 
+// 已使用大小
+inline int rb_used(ringbuffer_t *rb) {
+    uint32_t head = rb->head;
+    uint32_t tail = rb->tail;
+    if (head <= tail)
+        return tail - head;
+    else
+        return rb->size - (head - tail);
+}
+
 // 压入数据，成功返回0
 int rb_push(ringbuffer_t *rb, const uint8_t *buff, int size) {
 #ifdef USE_LOCK
     spinlock_lock(&rb->lock);
 #endif
-    uint32_t unused = rb->size - rb_used(rb);
+    int unused = rb->size - rb_used(rb);
     if (unused <= size) {
 #ifdef USE_LOCK
     spinlock_unlock(&rb->lock);
@@ -118,10 +147,14 @@ int rb_push(ringbuffer_t *rb, const uint8_t *buff, int size) {
         memcpy(rb->buffer, buff+len, size-len);
 
 #ifdef USE_MB
-    memory_barrier;
+    MEMORY_BARRIER;
 #endif
 
+#ifdef USE_POT
+    rb->tail = (rb->tail + size) & (rb->size -1);
+#else
     rb->tail = (rb->tail + size) % rb->size;
+#endif
 
 #ifdef USE_LOCK
     spinlock_unlock(&rb->lock);
@@ -136,7 +169,7 @@ int rb_pop(ringbuffer_t *rb, uint8_t *buff, int size) {
     spinlock_lock(&rb->lock);
 #endif
 
-    uint32_t used = rb_used(rb);
+    int used = rb_used(rb);
     if (used < size) {
 #ifdef USE_LOCK
     spinlock_unlock(&rb->lock);
@@ -150,10 +183,15 @@ int rb_pop(ringbuffer_t *rb, uint8_t *buff, int size) {
         memcpy(buff + len, rb->buffer, size - len);
 
 #ifdef USE_MB
-    memory_barrier;
+    MEMORY_BARRIER;
 #endif
 
+#ifdef USE_POT
+    rb->head = (rb->head + size) & (rb->size -1);
+#else
     rb->head = (rb->head + size) % rb->size;
+#endif
+    
 
 #ifdef USE_LOCK
     spinlock_unlock(&rb->lock);
@@ -161,17 +199,6 @@ int rb_pop(ringbuffer_t *rb, uint8_t *buff, int size) {
 
     return 0;
 }
-
-// 已使用大小
-inline int rb_used(ringbuffer_t *rb) {
-    uint32_t head = rb->head;
-    uint32_t tail = rb->tail;
-    if (head <= tail)
-        return tail - head;
-    else
-        return rb->size - (head - tail);
-}
-
 
 double getdetlatimeofday(struct timeval *begin, struct timeval *end)
 {
@@ -192,7 +219,7 @@ int main(int argc, char const *argv[])
     int size = atoi(argv[1]);
     int count = atoi(argv[2]);
     unsigned char *buf = malloc(size);
-    int rbsize = size * 50 + 1;
+    int rbsize = size * 50;
 
     pid_t pid = fork();
     if (pid == -1) {
@@ -208,9 +235,6 @@ int main(int argc, char const *argv[])
                 //     printf("data: %d\n", *(uint32_t*)buf);
                 // }
                 ++i;
-            } else {
-                // printf("error\n");
-                // sleep(1);
             }
         }
         rb_free(rb, 1);
@@ -225,9 +249,6 @@ int main(int argc, char const *argv[])
             // *(uint32_t*)buf = i;
             if (!rb_push(rb, buf, size)) {
                 ++i;
-            } else {
-                // printf("error\n");
-                // sleep(1);
             }
         }
 
