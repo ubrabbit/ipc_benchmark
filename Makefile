@@ -26,7 +26,7 @@ shm: shm.c
 	$(CC) $(CFLAGS) -o $@ $<
 
 shm2: shm2.c
-	$(CC) $(CFLAGS) -lrt -o $@ $<
+	$(CC) $(CFLAGS) -o $@ $< -lrt
 
 .PHONY: test
 test:
